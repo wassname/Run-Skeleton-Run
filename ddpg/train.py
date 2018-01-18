@@ -160,7 +160,7 @@ def train(args, model_fn, act_update_fns, multi_thread, train_single, play_singl
     args.actor_activation = activations[args.actor_activation]
     args.critic_activation = activations[args.critic_activation]
 
-    actor, critic = model_fn(args)
+    actor, critic, dynamics = model_fn(args)
 
     if args.restore_actor_from is not None:
         actor.load_state_dict(torch.load(args.restore_actor_from))
@@ -169,31 +169,42 @@ def train(args, model_fn, act_update_fns, multi_thread, train_single, play_singl
 
     actor.train()
     critic.train()
+    dynamics.train()
     actor.share_memory()
     critic.share_memory()
+    dynamics.share_memory()
 
     target_actor = copy.deepcopy(actor)
     target_critic = copy.deepcopy(critic)
+    target_dynamics = copy.deepcopy(dynamics)
 
     hard_update(target_actor, actor)
     hard_update(target_critic, critic)
+    hard_update(target_dynamics, dynamics)
 
     target_actor.train()
     target_critic.train()
+    target_dynamics.train()
     target_actor.share_memory()
     target_critic.share_memory()
+    target_dynamics.share_memory()
 
-    _, _, save_fn = act_update_fns(actor, critic, target_actor, target_critic, args)
+    _, _, save_fn = act_update_fns(actor, critic, dynamics, target_actor, target_critic, target_dynamics, args)
 
     processes = []
     best_reward = Value("f", 0.0)
+
+    # debugging
+    args.thread = 1
+    multi_thread(actor, critic, dynamics, target_actor, target_critic, target_dynamics, args, act_update_fns, best_reward)
+
     try:
         if args.num_threads == args.num_train_threads:
             for rank in range(args.num_threads):
                 args.thread = rank
                 p = mp.Process(
                     target=multi_thread,
-                    args=(actor, critic, target_actor, target_critic, args, act_update_fns,
+                    args=(actor, critic, dynamics, target_actor, target_critic, target_dynamics, args, act_update_fns,
                           best_reward))
                 p.start()
                 processes.append(p)
@@ -206,12 +217,12 @@ def train(args, model_fn, act_update_fns, multi_thread, train_single, play_singl
                 if rank < args.num_train_threads:
                     p = mp.Process(
                         target=train_single,
-                        args=(actor, critic, target_actor, target_critic, args, act_update_fns,
+                        args=(actor, critic, dynamics, target_actor, target_critic, target_dynamics, args, act_update_fns,
                               global_episode, global_update_step, episodes_queue))
                 else:
                     p = mp.Process(
                         target=play_single,
-                        args=(actor, critic, target_actor, target_critic, args, act_update_fns,
+                        args=(actor, critic, dynamics, target_actor, target_critic, target_dynamics, args, act_update_fns,
                               global_episode, global_update_step, episodes_queue,
                               best_reward))
                 p.start()

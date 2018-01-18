@@ -6,7 +6,7 @@ import time
 import torch.nn as nn
 from pprint import pprint
 
-from ddpg.nets import Actor, Critic
+from ddpg.nets import Actor, Critic, Base, ActorHead, CriticHead, DynamicsHead
 from common.torch_util import to_numpy, to_tensor, soft_update
 from common.misc_util import create_if_need, set_global_seeds
 from common.logger import Logger
@@ -15,33 +15,72 @@ from common.loss import create_loss, create_decay_fn
 from common.env_wrappers import create_env
 from common.random_process import create_random_process
 
-
 def create_model(args):
-    actor = Actor(
+    base = Base(
+        args.n_observation, args.n_action, args.actor_layers,
+        activation=args.actor_activation,
+        layer_norm=args.actor_layer_norm,
+        parameters_noise=args.actor_parameters_noise,
+        parameters_noise_factorised=args.actor_parameters_noise_factorised,
+        last_activation=nn.Tanh
+    )
+    actor = ActorHead(
+        base,
         args.n_observation, args.n_action, args.actor_layers,
         activation=args.actor_activation,
         layer_norm=args.actor_layer_norm,
         parameters_noise=args.actor_parameters_noise,
         parameters_noise_factorised=args.actor_parameters_noise_factorised,
         last_activation=nn.Tanh)
-    critic = Critic(
+    critic = CriticHead(
+        base,
+        args.n_observation, args.n_action, args.critic_layers,
+        activation=args.critic_activation,
+        layer_norm=args.critic_layer_norm,
+        parameters_noise=args.critic_parameters_noise,
+        parameters_noise_factorised=args.critic_parameters_noise_factorised)
+    dynamics = DynamicsHead(
+        base,
         args.n_observation, args.n_action, args.critic_layers,
         activation=args.critic_activation,
         layer_norm=args.critic_layer_norm,
         parameters_noise=args.critic_parameters_noise,
         parameters_noise_factorised=args.critic_parameters_noise_factorised)
 
+    pprint(base)
     pprint(actor)
     pprint(critic)
+    pprint(dynamics)
+    return actor, critic, dynamics
 
-    return actor, critic
+# def create_model_old(args):
+#     actor = Actor(
+#         args.n_observation, args.n_action, args.actor_layers,
+#         activation=args.actor_activation,
+#         layer_norm=args.actor_layer_norm,
+#         parameters_noise=args.actor_parameters_noise,
+#         parameters_noise_factorised=args.actor_parameters_noise_factorised,
+#         last_activation=nn.Tanh)
+#     critic = Critic(
+#         args.n_observation, args.n_action, args.critic_layers,
+#         activation=args.critic_activation,
+#         layer_norm=args.critic_layer_norm,
+#         parameters_noise=args.critic_parameters_noise,
+#         parameters_noise_factorised=args.critic_parameters_noise_factorised)
+#
+#     pprint(actor)
+#     pprint(critic)
+#
+#     return actor, critic
 
 
-def create_act_update_fns(actor, critic, target_actor, target_critic, args):
+def create_act_update_fns(actor, critic, dynamics, target_actor, target_critic, target_dynamics, args):
     actor_optim = torch.optim.Adam(actor.parameters(), lr=args.actor_lr)
     critic_optim = torch.optim.Adam(critic.parameters(), lr=args.critic_lr)
+    dynamics_optim = torch.optim.Adam(dynamics.parameters(), lr=args.actor_lr)
 
     criterion = create_loss(args)
+    dynamics_criterion = nn.MSELoss()
 
     low_action_boundary = -1.
     high_action_boundary = 1.
@@ -56,7 +95,7 @@ def create_act_update_fns(actor, critic, target_actor, target_critic, args):
     def update_fn(
             observations, actions, rewards, next_observations, dones, weights,
             actor_lr=1e-4, critic_lr=1e-3):
-        nonlocal actor, critic, target_actor, target_critic, actor_optim, critic_optim
+        nonlocal actor, critic, dynamics, target_actor, target_critic, target_dynamics, actor_optim, critic_optim, dynamics_optim
 
         if hasattr(args, "flip_states"):
             observations_flip = args.flip_states(observations)
@@ -78,19 +117,41 @@ def create_act_update_fns(actor, critic, target_actor, target_critic, args):
         rewards = to_tensor(rewards)
         weights = to_tensor(weights, requires_grad=False)
 
-        next_v_values = target_critic(
+        # Dynamics update
+        next_observations_pred = dynamics(observations, actions)
+        dynamics_loss = criterion(
+            next_observations_pred,
+            to_tensor(next_obsno proervations),
+            weights=torch.stack([weights, weights, weights], 1)
+        )
+        dynamics.zero_grad()
+        dynamics_loss.backward()
+        torch.nn.utils.clip_grad_norm(dynamics.parameters(), args.grad_clip)
+        for param_group in actor_optim.param_groups:
+            param_group["lr"] = actor_lr  # TODO change to dynamics lr
+        dynamics_optim.step()
+
+        # Critic update
+        next_next_observations_pred = target_dynamics(
             to_tensor(next_observations, volatile=True),
             target_actor(to_tensor(next_observations, volatile=True)),
         )
+        next_v_values = target_critic(next_next_observations_pred)
         next_v_values.volatile = False
+
+        # next_v_values = target_critic(
+        #     to_tensor(next_observations, volatile=True),
+        #     target_actor(to_tensor(next_observations, volatile=True)),
+        # )
+        # next_v_values.volatile = False
 
         reward_predicted = dones * args.gamma * next_v_values
         td_target = rewards + reward_predicted
 
-        # Critic update
         critic.zero_grad()
 
-        v_values = critic(to_tensor(observations), to_tensor(actions))
+        # v_values = critic(to_tensor(observations), to_tensor(actions))
+        v_values = critic(dynamics(to_tensor(observations), to_tensor(actions)))
         value_loss = criterion(v_values, td_target, weights=weights)
         value_loss.backward()
 
@@ -104,8 +165,10 @@ def create_act_update_fns(actor, critic, target_actor, target_critic, args):
         actor.zero_grad()
 
         policy_loss = -critic(
-            to_tensor(observations),
-            actor(to_tensor(observations))
+            dynamics(
+                to_tensor(observations),
+                actor(to_tensor(observations))
+            )
         )
 
         policy_loss = torch.mean(policy_loss * weights)
@@ -127,8 +190,12 @@ def create_act_update_fns(actor, critic, target_actor, target_critic, args):
         }
 
         td_v_values = critic(
-            to_tensor(observations, volatile=True, requires_grad=False),
-            to_tensor(actions, volatile=True, requires_grad=False))
+            dynamics(
+                to_tensor(observations, volatile=True, requires_grad=False),
+                to_tensor(actions, volatile=True, requires_grad=False)
+            )
+        )
+
         td_error = td_target - td_v_values
 
         info = {
@@ -138,7 +205,7 @@ def create_act_update_fns(actor, critic, target_actor, target_critic, args):
         return metrics, info
 
     def save_fn(episode=None):
-        nonlocal actor, critic
+        nonlocal actor, critic, dynamics
         if episode is None:
             save_path = args.logdir
         else:
@@ -152,14 +219,14 @@ def create_act_update_fns(actor, critic, target_actor, target_critic, args):
     return act_fn, update_fn, save_fn
 
 
-def train_multi_thread(actor, critic, target_actor, target_critic, args, prepare_fn, best_reward):
+def train_multi_thread(actor, critic, dynamics, target_actor, target_critic, target_dynamics, args, prepare_fn, best_reward):
     workerseed = args.seed + 241 * args.thread
     set_global_seeds(workerseed)
 
     args.logdir = "{}/thread_{}".format(args.logdir, args.thread)
     create_if_need(args.logdir)
 
-    act_fn, update_fn, save_fn = prepare_fn(actor, critic, target_actor, target_critic, args)
+    act_fn, update_fn, save_fn = prepare_fn(actor, critic, dynamics, target_actor, target_critic, target_dynamics, args)
     logger = Logger(args.logdir)
 
     buffer = create_buffer(args)
@@ -213,7 +280,7 @@ def train_multi_thread(actor, critic, target_actor, target_critic, args, prepare
             "epsilon": epsilon
         }
 
-        observation = env.reset(seed=seed, difficulty=args.difficulty)
+        observation = env.reset()#seed=seed, difficulty=args.difficulty)
         random_process.reset_states()
         done = False
 
@@ -288,7 +355,7 @@ def train_multi_thread(actor, critic, target_actor, target_critic, args, prepare
 
 
 def train_single_thread(
-        actor, critic, target_actor, target_critic, args, prepare_fn,
+        actor, critic, dynamics, target_actor, target_critic, target_dynamics, args, prepare_fn,
         global_episode, global_update_step, episodes_queue):
     workerseed = args.seed + 241 * args.thread
     set_global_seeds(workerseed)
@@ -296,7 +363,7 @@ def train_single_thread(
     args.logdir = "{}/thread_{}".format(args.logdir, args.thread)
     create_if_need(args.logdir)
 
-    _, update_fn, save_fn = prepare_fn(actor, critic, target_actor, target_critic, args)
+    _, update_fn, save_fn = prepare_fn(actor, critic, dynamics, target_actor, target_critic, target_dynamics, args)
 
     logger = Logger(args.logdir)
 
@@ -389,7 +456,7 @@ def train_single_thread(
 
 
 def play_single_thread(
-        actor, critic, target_actor, target_critic, args, prepare_fn,
+        actor, critic, dynamics, target_actor, target_critic, target_dynamics, args, prepare_fn,
         global_episode, global_update_step, episodes_queue,
         best_reward):
     workerseed = args.seed + 241 * args.thread
@@ -398,7 +465,7 @@ def play_single_thread(
     args.logdir = "{}/thread_{}".format(args.logdir, args.thread)
     create_if_need(args.logdir)
 
-    act_fn, _, save_fn = prepare_fn(actor, critic, target_actor, target_critic, args)
+    act_fn, _, save_fn = prepare_fn(actor, critic, dynamics, target_actor, target_critic, target_dynamics, args)
 
     logger = Logger(args.logdir)
     env = create_env(args)
@@ -430,7 +497,7 @@ def play_single_thread(
             "epsilon": epsilon
         }
 
-        observation = env.reset(seed=seed, difficulty=args.difficulty)
+        observation = env.reset()#seed=seed, difficulty=args.difficulty)
         random_process.reset_states()
         done = False
 
