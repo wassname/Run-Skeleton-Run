@@ -150,7 +150,6 @@ class CriticHead(nn.Module):
 
     def forward(self, observation):
         x = self.base.forward(observation)
-        # x = torch.cat((x, action), dim=1)
         x = self.value_net.forward(x)
         return x
 

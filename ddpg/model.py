@@ -16,6 +16,7 @@ from common.env_wrappers import create_env
 from common.random_process import create_random_process
 
 def create_model(args):
+    # TODO still using actor layers etc
     base = Base(
         args.n_observation, args.n_action, args.actor_layers,
         activation=args.actor_activation,
@@ -52,26 +53,6 @@ def create_model(args):
     pprint(critic)
     pprint(dynamics)
     return actor, critic, dynamics
-
-# def create_model_old(args):
-#     actor = Actor(
-#         args.n_observation, args.n_action, args.actor_layers,
-#         activation=args.actor_activation,
-#         layer_norm=args.actor_layer_norm,
-#         parameters_noise=args.actor_parameters_noise,
-#         parameters_noise_factorised=args.actor_parameters_noise_factorised,
-#         last_activation=nn.Tanh)
-#     critic = Critic(
-#         args.n_observation, args.n_action, args.critic_layers,
-#         activation=args.critic_activation,
-#         layer_norm=args.critic_layer_norm,
-#         parameters_noise=args.critic_parameters_noise,
-#         parameters_noise_factorised=args.critic_parameters_noise_factorised)
-#
-#     pprint(actor)
-#     pprint(critic)
-#
-#     return actor, critic
 
 
 def create_act_update_fns(actor, critic, dynamics, target_actor, target_critic, target_dynamics, args):
@@ -118,7 +99,10 @@ def create_act_update_fns(actor, critic, dynamics, target_actor, target_critic, 
         weights = to_tensor(weights, requires_grad=False)
 
         # Dynamics update
-        next_observations_pred = dynamics(observations, actions)
+        next_observations_pred = dynamics(
+            to_tensor(observations),
+            to_tensor(actions)
+        )
         dynamics_loss = criterion(
             next_observations_pred,
             to_tensor(next_observations),
@@ -149,16 +133,18 @@ def create_act_update_fns(actor, critic, dynamics, target_actor, target_critic, 
         td_target = rewards + reward_predicted
 
         critic.zero_grad()
-
-        # v_values = critic(to_tensor(observations), to_tensor(actions))
-        v_values = critic(dynamics(to_tensor(observations), to_tensor(actions)))
+        v_values = critic(
+            dynamics(
+                to_tensor(observations),
+                to_tensor(actions)
+            )
+        )
         value_loss = criterion(v_values, td_target, weights=weights)
         value_loss.backward()
 
         torch.nn.utils.clip_grad_norm(critic.parameters(), args.grad_clip)
         for param_group in critic_optim.param_groups:
             param_group["lr"] = critic_lr
-
         critic_optim.step()
 
         # Actor update
@@ -280,7 +266,8 @@ def train_multi_thread(actor, critic, dynamics, target_actor, target_critic, tar
             "epsilon": epsilon
         }
 
-        observation = env.reset()#seed=seed, difficulty=args.difficulty)
+        env.seed(seed)
+        observation = env.reset()  #seed=seed, difficulty=args.difficulty)
         random_process.reset_states()
         done = False
 
@@ -497,6 +484,7 @@ def play_single_thread(
             "epsilon": epsilon
         }
 
+        env.seed(seed)
         observation = env.reset()#seed=seed, difficulty=args.difficulty)
         random_process.reset_states()
         done = False
