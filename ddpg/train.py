@@ -194,12 +194,12 @@ def train(args, model_fn, act_update_fns, multi_thread, train_single, play_singl
     processes = []
     best_reward = Value("f", 0.0)
 
-    # debugging
-    args.thread = 1
-    multi_thread(actor, critic, dynamics, target_actor, target_critic, target_dynamics, args, act_update_fns, best_reward)
-
     try:
-        if args.num_threads == args.num_train_threads:
+        if args.num_threads == args.num_train_threads == 1:
+            # run a single thread in the foreground so we can debug easier
+            args.thread = 1
+            multi_thread(actor, critic, dynamics, target_actor, target_critic, target_dynamics, args, act_update_fns, best_reward)
+        elif args.num_threads == args.num_train_threads:
             for rank in range(args.num_threads):
                 args.thread = rank
                 p = mp.Process(

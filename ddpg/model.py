@@ -121,7 +121,7 @@ def create_act_update_fns(actor, critic, dynamics, target_actor, target_critic, 
         next_observations_pred = dynamics(observations, actions)
         dynamics_loss = criterion(
             next_observations_pred,
-            to_tensor(next_obsno proervations),
+            to_tensor(next_observations),
             weights=torch.stack([weights, weights, weights], 1)
         )
         dynamics.zero_grad()
