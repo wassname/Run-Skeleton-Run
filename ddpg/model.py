@@ -48,7 +48,6 @@ def create_model(args):
         parameters_noise=args.critic_parameters_noise,
         parameters_noise_factorised=args.critic_parameters_noise_factorised)
 
-    pprint(base)
     pprint(actor)
     pprint(critic)
     pprint(dynamics)
@@ -234,7 +233,7 @@ def train_multi_thread(actor, critic, dynamics, target_actor, target_critic, tar
         max_step=args.max_episodes)
     critic_learning_rate_decay_fn = create_decay_fn(
         "linear",
-        initial_value=arstep_metricsgs.critic_lr,
+        initial_value=args.critic_lr,
         final_value=args.critic_lr_end,
         max_step=args.max_episodes)
     dynamics_learning_rate_decay_fn = create_decay_fn(
@@ -436,7 +435,6 @@ def train_single_thread(
                 buffer.update_priorities(batch_idxes, new_priorities)
 
             for key, value in step_metrics.items():
-                value = to_numpy(value)[0]
                 logger.scalar_summary(key, value, update_step)
 
             logger.scalar_summary("actor lr", actor_lr, update_step)
