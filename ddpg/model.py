@@ -75,7 +75,7 @@ def create_act_update_fns(actor, critic, dynamics, target_actor, target_critic, 
 
     def update_fn(
             observations, actions, rewards, next_observations, dones, weights,
-            actor_lr=1e-4, critic_lr=1e-3):
+            actor_lr=1e-4, critic_lr=1e-3, dynamics_lr=1e-4):
         nonlocal actor, critic, dynamics, target_actor, target_critic, target_dynamics, actor_optim, critic_optim, dynamics_optim
 
         if hasattr(args, "flip_states"):
@@ -112,7 +112,7 @@ def create_act_update_fns(actor, critic, dynamics, target_actor, target_critic, 
         dynamics_loss.backward()
         torch.nn.utils.clip_grad_norm(dynamics.parameters(), args.grad_clip)
         for param_group in actor_optim.param_groups:
-            param_group["lr"] = actor_lr  # TODO change to dynamics lr
+            param_group["lr"] = dynamics_lr  # TODO change to dynamics lr
         dynamics_optim.step()
 
         # Critic update
@@ -172,7 +172,8 @@ def create_act_update_fns(actor, critic, dynamics, target_actor, target_critic, 
 
         metrics = {
             "value_loss": value_loss,
-            "policy_loss": policy_loss
+            "policy_loss": policy_loss,
+            "dynamics_loss": dynamics_loss
         }
 
         td_v_values = critic(
@@ -233,8 +234,13 @@ def train_multi_thread(actor, critic, dynamics, target_actor, target_critic, tar
         max_step=args.max_episodes)
     critic_learning_rate_decay_fn = create_decay_fn(
         "linear",
-        initial_value=args.critic_lr,
+        initial_value=arstep_metricsgs.critic_lr,
         final_value=args.critic_lr_end,
+        max_step=args.max_episodes)
+    dynamics_learning_rate_decay_fn = create_decay_fn(
+        "linear",
+        initial_value=args.dynamics_lr,
+        final_value=args.dynamics_lr_end,
         max_step=args.max_episodes)
 
     epsilon_cycle_len = random.randint(args.epsilon_cycle_len // 2, args.epsilon_cycle_len * 2)
@@ -256,11 +262,13 @@ def train_multi_thread(actor, critic, dynamics, target_actor, target_critic, tar
 
         actor_lr = actor_learning_rate_decay_fn(episode)
         critic_lr = critic_learning_rate_decay_fn(episode)
+        dynamics_lr = dynamics_learning_rate_decay_fn(episode)
         epsilon = min(args.initial_epsilon, max(args.final_epsilon, epsilon_decay_fn(episode)))
 
         episode_metrics = {
             "value_loss": 0.0,
             "policy_loss": 0.0,
+            "dynamics_loss": 0.0,
             "reward": 0.0,
             "step": 0,
             "epsilon": epsilon
@@ -293,7 +301,7 @@ def train_multi_thread(actor, critic, dynamics, target_actor, target_critic, tar
                 step_metrics, step_info = update_fn(
                     tr_observations, tr_actions, tr_rewards,
                     tr_next_observations, tr_dones,
-                    weights, actor_lr, critic_lr)
+                    weights, actor_lr, critic_lr, dynamics_lr)
 
                 if args.prioritized_replay:
                     new_priorities = np.abs(step_info["td_error"]) + 1e-6
@@ -329,6 +337,7 @@ def train_multi_thread(actor, critic, dynamics, target_actor, target_critic, tar
             episode)
         logger.scalar_summary("actor lr", actor_lr, episode)
         logger.scalar_summary("critic lr", critic_lr, episode)
+        logger.scalar_summary("dynamics_lr", dynamics_lr, episode)
 
         if episode % args.save_step == 0:
             save_fn(episode)
@@ -373,6 +382,11 @@ def train_single_thread(
         initial_value=args.critic_lr,
         final_value=args.critic_lr_end,
         max_step=args.max_update_steps)
+    dynamics_learning_rate_decay_fn = create_decay_fn(
+        "linear",
+        initial_value=args.dynamics_lr,
+        final_value=args.dynamics_lr_end,
+        max_step=args.max_update_steps)
 
     update_step = 0
     received_examples = 1  # just hack
@@ -380,8 +394,10 @@ def train_single_thread(
             and global_update_step.value < args.max_update_steps * args.num_train_threads:
         actor_lr = actor_learning_rate_decay_fn(update_step)
         critic_lr = critic_learning_rate_decay_fn(update_step)
+        dynamics_lr = dynamics_learning_rate_decay_fn(update_step)
 
         actor_lr = min(args.actor_lr, max(args.actor_lr_end, actor_lr))
+        dynamics_lr = min(args.dynamics_lr, max(args.dynamics_lr_end, dynamics_lr))
         critic_lr = min(args.critic_lr, max(args.critic_lr_end, critic_lr))
 
         while True:
@@ -410,7 +426,7 @@ def train_single_thread(
             step_metrics, step_info = update_fn(
                 tr_observations, tr_actions, tr_rewards,
                 tr_next_observations, tr_dones,
-                weights, actor_lr, critic_lr)
+                weights, actor_lr, critic_lr, dynamics_lr)
 
             update_step += 1
             global_update_step.value += 1
@@ -425,6 +441,7 @@ def train_single_thread(
 
             logger.scalar_summary("actor lr", actor_lr, update_step)
             logger.scalar_summary("critic lr", critic_lr, update_step)
+            logger.scalar_summary("dynamics lr", dynamics_lr, update_step)
 
             if update_step % args.save_step == 0:
                 save_fn(update_step)

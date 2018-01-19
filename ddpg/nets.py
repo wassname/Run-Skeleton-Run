@@ -154,19 +154,18 @@ class CriticHead(nn.Module):
         return x
 
 
-
 class ActorHead(nn.Module):
     def __init__(self, base, n_observation, n_action,
                  layers, activation=torch.nn.ELU,
                  layer_norm=False,
                  parameters_noise=False, parameters_noise_factorised=False,
-                 last_activation=torch.nn.Tanh, init_w=3e-3):
+                 last_activation=lambda x: x, init_w=3e-3):
         super(ActorHead, self).__init__()
         self.base = base
 
         self.policy_net = LinearNet(
             layers=[self.base.feature_net.output_shape, n_action],
-            activation=last_activation,
+            # activation=last_activation,
             layer_norm=False
         )
         self.init_weights(init_w)
@@ -183,7 +182,6 @@ class ActorHead(nn.Module):
         return x
 
 
-
 class DynamicsHead(nn.Module):
     def __init__(self, base, n_observation, n_action,
                  layers, activation=torch.nn.ELU,
@@ -192,15 +190,34 @@ class DynamicsHead(nn.Module):
                  init_w=3e-3):
         super(DynamicsHead, self).__init__()
         self.base = base
-        self.value_net = nn.Linear(self.base.feature_net.output_shape + n_action, n_observation)
+
+        if parameters_noise:
+            def linear_layer(x_in, x_out):
+                return NoisyLinear(x_in, x_out, factorised=parameters_noise_factorised)
+        else:
+            linear_layer = nn.Linear
+
+        # self.value_net = nn.Linear(self.base.feature_net.output_shape + n_action, self.base.feature_net.output_shape)
+        self.value_net = LinearNet(
+            layers=[self.base.feature_net.output_shape + n_action, self.base.feature_net.output_shape],
+            activation=activation,
+            layer_norm=layer_norm,
+            linear_layer=linear_layer
+        )
+        self.value_net2 = nn.Linear(self.base.feature_net.output_shape, n_observation)
         self.init_weights(init_w)
 
     def init_weights(self, init_w):
-        self.value_net.weight.data.uniform_(-init_w, init_w)
+        self.value_net2.weight.data.uniform_(-init_w, init_w)
+        # self.value_net.weight.data.uniform_(-init_w, init_w)
+        for layer in self.value_net.net:
+            if isinstance(layer, nn.Linear):
+                layer.weight.data.uniform_(-init_w, init_w)
 
     def forward(self, observation, action):
         action = to_torch_variable(action)
         x = self.base.forward(observation)
         x = torch.cat((x, action), dim=1)
         x = self.value_net.forward(x)
+        x = self.value_net2.forward(x)
         return x

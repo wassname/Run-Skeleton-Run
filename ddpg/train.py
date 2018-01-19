@@ -31,7 +31,7 @@ def parse_args():
     parser.add_argument('--reward-scale', type=float, default=1.)
     boolean_flag(parser, "flip-state-action", default=False)
 
-    for agent in ["actor", "critic"]:
+    for agent in ["actor", "critic", "dynamics"]:
         parser.add_argument('--{}-layers'.format(agent), type=str, default="64-64")
         parser.add_argument('--{}-activation'.format(agent), type=str, default="relu")
         boolean_flag(parser, "{}-layer-norm".format(agent), default=False)
@@ -195,10 +195,18 @@ def train(args, model_fn, act_update_fns, multi_thread, train_single, play_singl
     best_reward = Value("f", 0.0)
 
     try:
+
         if args.num_threads == args.num_train_threads == 1:
-            # run a single thread in the foreground so we can debug easier
+            # # run a single thread in the foreground so we can debug easier
+            # args.thread = 1
+            # multi_thread(actor, critic, dynamics, target_actor, target_critic, target_dynamics, args, act_update_fns, best_reward)
+
+            # or debug the single thread funcs
             args.thread = 1
-            multi_thread(actor, critic, dynamics, target_actor, target_critic, target_dynamics, args, act_update_fns, best_reward)
+            global_episode = Value("i", 0)
+            global_update_step = Value("i", 0)
+            episodes_queue = mp.Queue()
+            train_single(actor, critic, dynamics, target_actor, target_critic, target_dynamics, args, act_update_fns, global_episode, global_update_step, episodes_queue)
         elif args.num_threads == args.num_train_threads:
             for rank in range(args.num_threads):
                 args.thread = rank
