@@ -216,7 +216,7 @@ def train_multi_thread(actor, critic, dynamics, target_actor, target_critic, tar
     env = create_env(args)
     random_process = create_random_process(args)
 
-    state_normalizer = StaticNormalizer(env.state_dim)
+    state_normalizer = StaticNormalizer(int(np.prod(env.observation_space.shape)))
     reward_normalizer = StaticNormalizer(1)
 
     actor_learning_rate_decay_fn = create_decay_fn(
@@ -488,7 +488,7 @@ def play_single_thread(
         num_cycles=args.max_episodes // epsilon_cycle_len)
 
     env = create_env(args)
-    state_normalizer = StaticNormalizer(env.state_dim)
+    state_normalizer = StaticNormalizer(int(np.prod(env.observation_space.shape)))
     reward_normalizer = StaticNormalizer(1)
 
     episode = 1
