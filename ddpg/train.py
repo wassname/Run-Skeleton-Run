@@ -147,6 +147,8 @@ def train(args, model_fn, act_update_fns, multi_thread, train_single, play_singl
         json.dump(vars(args), fout, indent=4, ensure_ascii=False, sort_keys=True)
 
     env = create_env(args)
+    shared_state_normalizer = StaticNormalizer(env.state_dim)
+    shared_reward_normalizer = StaticNormalizer(1)
 
     if args.flip_state_action and hasattr(env, "state_transform"):
         args.flip_states = env.state_transform.flip_states
@@ -202,14 +204,14 @@ def train(args, model_fn, act_update_fns, multi_thread, train_single, play_singl
             if args.debug:
                 # # run a single thread in the foreground so we can debug easier
                 args.thread = 1
-                multi_thread(actor, critic, dynamics, target_actor, target_critic, target_dynamics, args, act_update_fns, best_reward)
+                multi_thread(actor, critic, dynamics, target_actor, target_critic, target_dynamics, args, act_update_fns, best_reward, shared_state_normalizer, shared_reward_normalizer)
             else:
                 for rank in range(args.num_threads):
                     args.thread = rank
                     p = mp.Process(
                         target=multi_thread,
                         args=(actor, critic, dynamics, target_actor, target_critic, target_dynamics, args, act_update_fns,
-                              best_reward))
+                              best_reward, shared_state_normalizer, shared_reward_normalizer))
                     p.start()
                     processes.append(p)
         else:
@@ -224,7 +226,7 @@ def train(args, model_fn, act_update_fns, multi_thread, train_single, play_singl
                 train_single(actor, critic, dynamics, target_actor, target_critic, target_dynamics, args, act_update_fns, global_episode, global_update_step, episodes_queue)
 
                 args.thread = 2
-                play_single(actor, critic, dynamics, target_actor, target_critic, target_dynamics, args, act_update_fns, global_episode, global_update_step, episodes_queue, best_reward)
+                play_single(actor, critic, dynamics, target_actor, target_critic, target_dynamics, args, act_update_fns, global_episode, global_update_step, episodes_queue, best_reward, shared_state_normalizer, shared_reward_normalizer)
             else:
                 global_episode = Value("i", 0)
                 global_update_step = Value("i", 0)
@@ -241,7 +243,7 @@ def train(args, model_fn, act_update_fns, multi_thread, train_single, play_singl
                             target=play_single,
                             args=(actor, critic, dynamics, target_actor, target_critic, target_dynamics, args, act_update_fns,
                                   global_episode, global_update_step, episodes_queue,
-                                  best_reward))
+                                  best_reward, shared_state_normalizer, shared_reward_normalizer))
                     p.start()
                     processes.append(p)
 

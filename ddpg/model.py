@@ -6,47 +6,51 @@ import time
 import torch.nn as nn
 from pprint import pprint
 
-from ddpg.nets import Actor, Critic, Base, ActorHead, CriticHead, DynamicsHead
+from ddpg.nets import Base, ActorHead, CriticHead, DynamicsHead
 from common.torch_util import to_numpy, to_tensor, soft_update
 from common.misc_util import create_if_need, set_global_seeds
 from common.logger import Logger
 from common.buffers import create_buffer
+from common.normalizer import StaticNormalizer, Normalizer
 from common.loss import create_loss, create_decay_fn
 from common.env_wrappers import create_env
 from common.random_process import create_random_process
 
 def create_model(args):
-    # TODO still using actor layers etc
     base = Base(
-        args.n_observation, args.n_action, args.actor_layers,
-        activation=args.actor_activation,
-        layer_norm=args.actor_layer_norm,
-        parameters_noise=args.actor_parameters_noise,
-        parameters_noise_factorised=args.actor_parameters_noise_factorised,
-        last_activation=nn.Tanh
+        args.n_observation, args.n_action, args.base_layers,
+        activation=args.base_activation,
+        layer_norm=args.base_layer_norm,
+        parameters_noise=args.base_parameters_noise,
+        parameters_noise_factorised=args.base_parameters_noise_factorised
     )
     actor = ActorHead(
         base,
-        args.n_observation, args.n_action, args.actor_layers,
-        activation=args.actor_activation,
-        layer_norm=args.actor_layer_norm,
-        parameters_noise=args.actor_parameters_noise,
-        parameters_noise_factorised=args.actor_parameters_noise_factorised,
+        args.n_observation, args.n_action,
+        # args.actor_layers,
+        # activation=args.actor_activation,
+        # layer_norm=args.actor_layer_norm,
+        # parameters_noise=args.actor_parameters_noise,
+        # parameters_noise_factorised=args.actor_parameters_noise_factorised,
         last_activation=nn.Tanh)
     critic = CriticHead(
         base,
-        args.n_observation, args.n_action, args.critic_layers,
-        activation=args.critic_activation,
-        layer_norm=args.critic_layer_norm,
-        parameters_noise=args.critic_parameters_noise,
-        parameters_noise_factorised=args.critic_parameters_noise_factorised)
+        args.n_observation, args.n_action,
+         # args.critic_layers,
+        # activation=args.critic_activation,
+        # layer_norm=args.critic_layer_norm,
+        # parameters_noise=args.critic_parameters_noise,
+        # parameters_noise_factorised=args.critic_parameters_noise_factorised
+        )
     dynamics = DynamicsHead(
         base,
-        args.n_observation, args.n_action, args.critic_layers,
-        activation=args.critic_activation,
-        layer_norm=args.critic_layer_norm,
-        parameters_noise=args.critic_parameters_noise,
-        parameters_noise_factorised=args.critic_parameters_noise_factorised)
+        args.n_observation, args.n_action,
+        # args.dynamics_layers,
+        # activation=args.dynamics_activation,
+        # layer_norm=args.dynamics_layer_norm,
+        # parameters_noise=args.dynamics_parameters_noise,
+        # parameters_noise_factorised=args.dynamics_parameters_noise_factorised
+        )
 
     pprint(actor)
     pprint(critic)
@@ -205,7 +209,7 @@ def create_act_update_fns(actor, critic, dynamics, target_actor, target_critic, 
     return act_fn, update_fn, save_fn
 
 
-def train_multi_thread(actor, critic, dynamics, target_actor, target_critic, target_dynamics, args, prepare_fn, best_reward):
+def train_multi_thread(actor, critic, dynamics, target_actor, target_critic, target_dynamics, args, prepare_fn, best_reward, shared_state_normalizer, shared_reward_normalizer):
     workerseed = args.seed + 241 * args.thread
     set_global_seeds(workerseed)
 
@@ -225,6 +229,9 @@ def train_multi_thread(actor, critic, dynamics, target_actor, target_critic, tar
 
     env = create_env(args)
     random_process = create_random_process(args)
+
+    state_normalizer = StaticNormalizer(env.state_dim)
+    reward_normalizer = StaticNormalizer(1)
 
     actor_learning_rate_decay_fn = create_decay_fn(
         "linear",
@@ -275,6 +282,7 @@ def train_multi_thread(actor, critic, dynamics, target_actor, target_critic, tar
 
         env.seed(seed)
         observation = env.reset()  #seed=seed, difficulty=args.difficulty)
+        observation = state_normalizer(observation)
         random_process.reset_states()
         done = False
 
@@ -282,9 +290,13 @@ def train_multi_thread(actor, critic, dynamics, target_actor, target_critic, tar
             action = act_fn(observation, noise=epsilon*random_process.sample())
             next_observation, reward, done, _ = env.step(action)
 
-            buffer.add(observation, action, reward, next_observation, done)
             episode_metrics["reward"] += reward
             episode_metrics["step"] += 1
+
+            next_observation = state_normalizer(next_observation)
+            reward = reward_normalizer(reward)
+
+            buffer.add(observation, action, reward, next_observation, done)
 
             if len(buffer) >= args.train_steps:
 
@@ -314,8 +326,7 @@ def train_multi_thread(actor, critic, dynamics, target_actor, target_critic, tar
 
         episode += 1
 
-        if episode_metrics["reward"] > 15.0 * args.reward_scale \
-                and episode_metrics["reward"] > best_reward.value:
+        if episode_metrics["reward"] > best_reward.value:
             best_reward.value = episode_metrics["reward"]
             logger.scalar_summary("best reward", best_reward.value, episode)
             save_fn(episode)
@@ -340,9 +351,17 @@ def train_multi_thread(actor, critic, dynamics, target_actor, target_critic, tar
 
         if episode % args.save_step == 0:
             save_fn(episode)
+            logger.info('episode %s, metrics %s', episode, episode_metrics)
 
         if elapsed_time > 86400 * args.max_train_days:
             episode = args.max_episodes + 1
+
+        # Sync normalizers
+        shared_state_normalizer.offline_stats.merge(state_normalizer.online_stats)
+        state_normalizer.online_stats.zero()
+
+        shared_reward_normalizer.offline_stats.merge(reward_normalizer.online_stats)
+        reward_normalizer.online_stats.zero()
 
     save_fn(episode)
 
@@ -460,7 +479,7 @@ def train_single_thread(
 def play_single_thread(
         actor, critic, dynamics, target_actor, target_critic, target_dynamics, args, prepare_fn,
         global_episode, global_update_step, episodes_queue,
-        best_reward):
+        best_reward, shared_state_normalizer, shared_reward_normalizer):
     workerseed = args.seed + 241 * args.thread
     set_global_seeds(workerseed)
 
@@ -482,6 +501,10 @@ def play_single_thread(
         cycle_len=epsilon_cycle_len,
         num_cycles=args.max_episodes // epsilon_cycle_len)
 
+    env = create_env(args)
+    state_normalizer = StaticNormalizer(env.state_dim)
+    reward_normalizer = StaticNormalizer(1)
+
     episode = 1
     step = 0
     start_time = time.time()
@@ -501,6 +524,7 @@ def play_single_thread(
 
         env.seed(seed)
         observation = env.reset()#seed=seed, difficulty=args.difficulty)
+        observation = state_normalizer(observation)
         random_process.reset_states()
         done = False
 
@@ -509,9 +533,14 @@ def play_single_thread(
             action = act_fn(observation, noise=epsilon * random_process.sample())
             next_observation, reward, done, _ = env.step(action)
 
-            replay.append((observation, action, reward, next_observation, done))
+
             episode_metrics["reward"] += reward
             episode_metrics["step"] += 1
+
+            next_observation = state_normalizer(next_observation)
+            reward = reward_normalizer(reward)
+
+            replay.append((observation, action, reward, next_observation, done))
 
             observation = next_observation
 
@@ -543,5 +572,12 @@ def play_single_thread(
 
         if elapsed_time > 86400 * args.max_train_days:
             global_episode.value = args.max_episodes * (args.num_threads - args.num_train_threads) + 1
+
+        # Sync normalizers
+        shared_state_normalizer.offline_stats.merge(state_normalizer.online_stats)
+        state_normalizer.online_stats.zero()
+
+        shared_reward_normalizer.offline_stats.merge(reward_normalizer.online_stats)
+        reward_normalizer.online_stats.zero()
 
     raise KeyboardInterrupt
