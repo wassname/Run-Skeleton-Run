@@ -32,13 +32,14 @@ def parse_args():
     boolean_flag(parser, "flip-state-action", default=False)
     boolean_flag(parser, 'debug', default=False, help="Run in single threaded mode for debugging")
 
-    for agent in ["actor", "critic", "dynamics"]:
+    for agent in ["base"]:
         parser.add_argument('--{}-layers'.format(agent), type=str, default="64-64")
         parser.add_argument('--{}-activation'.format(agent), type=str, default="relu")
         boolean_flag(parser, "{}-layer-norm".format(agent), default=False)
         boolean_flag(parser, "{}-parameters-noise".format(agent), default=False)
         boolean_flag(parser, "{}-parameters-noise-factorised".format(agent), default=False)
 
+    for agent in ["actor", "critic", "dynamics"]:
         parser.add_argument('--{}-lr'.format(agent), type=float, default=1e-3)
         parser.add_argument('--{}-lr-end'.format(agent), type=float, default=5e-5)
 
@@ -157,11 +158,9 @@ def train(args, model_fn, act_update_fns, multi_thread, train_single, play_singl
     args.n_action = env.action_space.shape[0]
     args.n_observation = env.observation_space.shape[0]
 
-    args.actor_layers = str2params(args.actor_layers)
-    args.critic_layers = str2params(args.critic_layers)
+    args.base_layers = str2params(args.base_layers)
 
-    args.actor_activation = activations[args.actor_activation]
-    args.critic_activation = activations[args.critic_activation]
+    args.base_activation = activations[args.base_activation]
 
     actor, critic, dynamics = model_fn(args)
 
