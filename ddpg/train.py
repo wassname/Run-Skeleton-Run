@@ -31,6 +31,7 @@ def parse_args():
     parser.add_argument('--skip-frames', type=int, default=1)
     parser.add_argument('--fail-reward', type=float, default=0.0)
     parser.add_argument('--reward-scale', type=float, default=1.)
+    parser.add_argument('--action-scale', type=float, default=1.)
     boolean_flag(parser, "flip-state-action", default=False)
     boolean_flag(parser, 'debug', default=False, help="Run in single threaded mode for debugging")
 
