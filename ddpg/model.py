@@ -27,29 +27,15 @@ def create_model(args):
     actor = ActorHead(
         base,
         args.n_observation, args.n_action,
-        # args.actor_layers,
-        # activation=args.actor_activation,
-        # layer_norm=args.actor_layer_norm,
-        # parameters_noise=args.actor_parameters_noise,
-        # parameters_noise_factorised=args.actor_parameters_noise_factorised,
+        action_scale=args.action_scale,
         last_activation=nn.Tanh)
     critic = CriticHead(
         base,
         args.n_observation, args.n_action,
-         # args.critic_layers,
-        # activation=args.critic_activation,
-        # layer_norm=args.critic_layer_norm,
-        # parameters_noise=args.critic_parameters_noise,
-        # parameters_noise_factorised=args.critic_parameters_noise_factorised
         )
     dynamics = DynamicsHead(
         base,
         args.n_observation, args.n_action,
-        # args.dynamics_layers,
-        # activation=args.dynamics_activation,
-        # layer_norm=args.dynamics_layer_norm,
-        # parameters_noise=args.dynamics_parameters_noise,
-        # parameters_noise_factorised=args.dynamics_parameters_noise_factorised
         )
 
     pprint(actor)
